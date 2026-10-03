@@ -2,7 +2,7 @@
 
 ## Scope and outcome
 
-Implementation and independent source review only. The reset script was **not run or imported**, including in dry-run mode. Mock tests were **not run**. No credentials were read, no authenticated endpoints were called, and no launchd job was installed or activated.
+Initial implementation and independent source review only. The reset script was **not run or imported**, including in dry-run mode. Mock tests were **not run**. No credentials were read during the initial implementation/review, no authenticated endpoints were called, and no launchd job was installed or activated. The subsequent user-requested Jcode auth adaptation inspected the local auth store's field names and types only, without printing credential or identity values.
 
 Source was parsed with Python `ast.parse` and the launchd template with `plistlib.loads`. These operate on text/data and do not execute project code. Static parsing caught a text-edit collision during development, which was repaired before final checks. Parsing is not a runtime test.
 
@@ -44,3 +44,12 @@ Source was parsed with Python `ast.parse` and the launchd template with `plistli
 - A successful reset whose confirmation is delayed can remain pending. There is intentionally no automatic retry or journal-clearing command.
 
 **No resets were consumed by this work.**
+
+## Jcode auth-path adaptation
+
+- Default is now `~/.jcode/openai-auth.json`, not `$CODEX_HOME/auth.json`.
+- Inspected field names/types identify `openai_accounts[]` entries with `access_token` and `account_id`. No auth file contents or values were copied to the repository.
+- The loader requires exactly one entry matching explicit `--account-id`. It ignores `active_openai_account` for reset selection and refuses missing, duplicate, malformed, or tokenless matches.
+- Explicit `--auth` overrides retain Codex nested-token and flat OAuth compatibility. Credential files remain read-only.
+- Added five synthetic auth-format test methods, bringing the total to 20. All remain unexecuted. Source-only syntax checks cover the adaptation. Threshold, POST, and journal logic were unchanged.
+- The follow-up review's known-unsent stale-preflight lockout finding remains unresolved in this path-only change.

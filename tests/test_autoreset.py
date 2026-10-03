@@ -4,6 +4,7 @@ For a future authorized run from the repo root:
     python3 -m unittest discover -s tests -v
 """
 import copy
+import json
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,6 +54,43 @@ class FakeAPI:
                 raise ar.Refusal("Synthetic ambiguous timeout")
             return {"success": True}
         raise AssertionError("Unexpected path")
+
+
+class AuthTests(unittest.TestCase):
+    """Synthetic credential text only. Never reads a real auth file."""
+
+    def load(self, data, expected="pinned-account"):
+        with patch.object(Path, "read_text", return_value=json.dumps(data)):
+            return ar.load_auth(Path("synthetic-auth.json"), expected)
+
+    def test_jcode_default_path(self):
+        self.assertEqual(ar.DEFAULT_AUTH, Path.home() / ".jcode/openai-auth.json")
+
+    def test_jcode_selects_pinned_not_active_account(self):
+        data = {"active_openai_account": "other-label", "openai_accounts": [
+            {"label": "other-label", "account_id": "other-account", "access_token": "fake-other"},
+            {"label": "pinned-label", "account_id": "pinned-account", "access_token": "fake-pinned"},
+        ]}
+        self.assertEqual(self.load(data), "fake-pinned")
+
+    def test_missing_or_duplicate_jcode_account_refused(self):
+        account = {"account_id": "pinned-account", "access_token": "fake-pinned"}
+        for entries in ([], [dict(account, account_id="other-account")], [account, account]):
+            with self.subTest(entries=entries), self.assertRaises(ar.Refusal):
+                self.load({"openai_accounts": entries})
+
+    def test_malformed_jcode_store_refused(self):
+        for data in ({"openai_accounts": {}}, {"openai_accounts": [None]},
+                     {"openai_accounts": [{"account_id": "pinned-account"}]},
+                     {"openai_accounts": [{"account_id": "pinned-account", "access_token": ""}]}):
+            with self.subTest(data=data), self.assertRaises(ar.Refusal):
+                self.load(data)
+
+    def test_codex_and_flat_overrides_retained(self):
+        account = {"account_id": "pinned-account", "access_token": "fake-pinned"}
+        for data in ({"tokens": account}, account):
+            with self.subTest(data=data):
+                self.assertEqual(self.load(data), "fake-pinned")
 
 
 class ResetTests(unittest.TestCase):

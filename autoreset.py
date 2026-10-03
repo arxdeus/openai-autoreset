@@ -23,6 +23,7 @@ BASE = "https://chatgpt.com/backend-api/wham/"
 CREDITS = "rate-limit-reset-credits"
 WEEK = 604800
 STATE_DIR = Path.home() / "Library/Application Support/openai-autoreset"
+DEFAULT_AUTH = Path.home() / ".jcode/openai-auth.json"
 
 
 class Refusal(Exception):
@@ -102,10 +103,23 @@ def available_credits(data, now):
 def load_auth(path, expected):
     try:
         data = json.loads(path.read_text())
-        tokens = data["tokens"]
+        if not isinstance(data, dict):
+            raise Refusal("Invalid OAuth credential store.")
+        if "openai_accounts" in data:
+            accounts = data["openai_accounts"]
+            if not isinstance(accounts, list) or any(not isinstance(a, dict) for a in accounts):
+                raise Refusal("Invalid Jcode OpenAI account list.")
+            matches = [a for a in accounts if a.get("account_id") == expected]
+            if len(matches) != 1:
+                raise Refusal("Pinned account must match exactly one Jcode OpenAI account.")
+            # active_openai_account is a UI selection, never an authorization to switch.
+            tokens = matches[0]
+        else:
+            # Retain explicitly selected Codex files and legacy flat OAuth stores.
+            tokens = data.get("tokens", data)
         token, account = tokens["access_token"], tokens["account_id"]
     except (OSError, ValueError, KeyError, TypeError):
-        raise Refusal("Cannot read Codex OAuth credentials. Sign in manually if needed.") from None
+        raise Refusal("Cannot read OpenAI OAuth credentials. Sign in manually if needed.") from None
     if not isinstance(token, str) or not token or account != expected:
         raise Refusal("Missing OAuth token or account ID differs from --account-id.")
     if any(c in token + expected for c in "\r\n"):
@@ -288,9 +302,9 @@ def main():
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--execute", action="store_true", help="ALLOW spending a banked reset")
     modes.add_argument("--dry-run", action="store_true", help="Read only (the default)")
-    parser.add_argument("--account-id", required=True, help="Pin the intended tokens.account_id")
-    parser.add_argument("--auth", type=Path,
-                        default=Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "auth.json")
+    parser.add_argument("--account-id", required=True, help="Pin the intended OAuth account_id")
+    parser.add_argument("--auth", type=Path, default=DEFAULT_AUTH,
+                        help="OAuth store path (default ~/.jcode/openai-auth.json)")
     parser.add_argument("--max-resets", type=int, default=1,
                         help="Maximum lifetime attempts in this account journal (default 1)")
     args = parser.parse_args()

@@ -4,6 +4,7 @@ __pycache__/
 .env
 .env.*
 auth.json
+openai-auth.json
 *.auth.json
 *.log
 ChatGPT.html

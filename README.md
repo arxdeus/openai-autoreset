@@ -13,9 +13,9 @@ The saved `ChatGPT.html` and its companion assets were searched as inert text. T
 ## Requirements
 
 - macOS and Python 3.10 or newer. No third-party packages.
-- An existing ChatGPT-authenticated Codex `auth.json` containing `tokens.access_token` and `tokens.account_id`. Keychain-only credentials are not supported.
+- An existing Jcode OpenAI OAuth store at `~/.jcode/openai-auth.json`, containing `openai_accounts[]` entries with `access_token` and `account_id`. Explicit `--auth` overrides also support Codex `tokens.access_token` / `tokens.account_id` and legacy flat OAuth stores. Keychain-only credentials are not supported.
 - At least one eligible banked reset. API-key billing is not supported.
-- Obtain the intended `tokens.account_id` locally and keep it private. Never paste tokens into commands, logs, or this repository.
+- Obtain the intended `account_id` from your Jcode account entry locally and keep it private. Never paste tokens into commands, logs, or this repository.
 
 ## Commands for your later use, NOT run during implementation
 
@@ -25,7 +25,7 @@ Read-only check (this still makes authenticated GET requests when **you** run it
 python3 autoreset.py --account-id 'YOUR_ACCOUNT_ID' --dry-run
 ```
 
-Default auth file: `$CODEX_HOME/auth.json`, otherwise `~/.codex/auth.json`. Override with `--auth '/absolute/path/auth.json'`. OAuth tokens are read only, never refreshed or rewritten.
+Default auth file: `~/.jcode/openai-auth.json`. `--account-id` must match exactly one entry in `openai_accounts[]`; missing or duplicate matches are refused. Jcode's `active_openai_account` does not override the pinned account, so changing the active account cannot silently redirect resets. Override with `--auth '/absolute/path/auth.json'` to use another supported OAuth store. `CODEX_HOME` no longer selects the default. OAuth tokens are read only, never refreshed or rewritten.
 
 **The next command can consume a real reset immediately. Run only when you decide to activate it:**
 
@@ -41,7 +41,7 @@ Exit 0: read-only eligibility reported or reset verified. Exit 2: warning, ineli
 
 `launchd/com.local.openai-autoreset.plist.example` is an **uninstalled, disabled-by-default, dry-run template** for checking every five minutes while logged in. It does not wake a sleeping Mac.
 
-To use later, replace every placeholder with an absolute path or your account ID. Use the actual Python 3.10+ binary path, not a shell alias. `launchd` does not expand `~`, `$HOME`, or shell expressions. If using a nondefault Codex home, add `--auth` and its absolute auth file path. Ensure log parent directories exist. Keep configuration and logs private.
+To use later, replace every placeholder with an absolute path or your account ID. Use the actual Python 3.10+ binary path, not a shell alias. `launchd` does not expand `~`, `$HOME`, or shell expressions. The script itself resolves its default Jcode auth path from your home directory. For another OAuth store, add `--auth` and its absolute file path. Ensure log parent directories exist. Keep configuration and logs private.
 
 For live mode, deliberately replace `--dry-run` with `--execute`, set your total `--max-resets` budget, and change `Disabled` to false. Copy the reviewed file to `~/Library/LaunchAgents/com.local.openai-autoreset.plist`. Installing/enabling is intentionally left to you, and was **not done** here.
 
