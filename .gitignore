@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.DS_Store
+.env
+.env.*
+auth.json
+*.auth.json
+*.log
+ChatGPT.html
+ChatGPT_files/
+com.local.openai-autoreset.plist

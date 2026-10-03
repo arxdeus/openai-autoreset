@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.local.openai-autoreset</string>
+  <key>Disabled</key><true/>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/ABSOLUTE/PATH/TO/python3</string>
+    <string>/ABSOLUTE/PATH/TO/openai-autoreset/autoreset.py</string>
+    <string>--account-id</string><string>YOUR_ACCOUNT_ID</string>
+    <string>--dry-run</string>
+    <string>--max-resets</string><string>1</string>
+  </array>
+  <key>StartInterval</key><integer>300</integer>
+  <key>RunAtLoad</key><false/>
+  <key>ProcessType</key><string>Background</string>
+  <key>Umask</key><integer>63</integer>
+  <key>StandardOutPath</key><string>/ABSOLUTE/EXISTING/LOG/DIRECTORY/openai-autoreset.log</string>
+  <key>StandardErrorPath</key><string>/ABSOLUTE/EXISTING/LOG/DIRECTORY/openai-autoreset.err.log</string>
+</dict>
+</plist>
