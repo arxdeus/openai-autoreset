@@ -12,8 +12,8 @@ Source was parsed with Python `ast.parse` and the launchd template with `plistli
 | --- | --- | --- |
 | Only 0%-1% weekly remaining | `weekly` selects exactly one 604800-second general window. `require_threshold` enforces inclusive 0..1 without rounding. Called on initial read, final read, and immediately before POST. | Source trace and authored boundary tests, not executed. |
 | Warn above 1% | `require_threshold` raises a message starting `WARNING`, caught and printed to stderr at CLI entry. No POST is reachable afterward. | Source trace. |
-| Read-only by default | Mutually exclusive `--execute`/`--dry-run`. Default branches out before state persistence or POST. | Source trace. |
-| Automate on macOS | Single-run checker plus five-minute launchd example. Example has `Disabled=true`, `RunAtLoad=false`, and `--dry-run`. | Plist parsed and safety settings asserted. Not installed. |
+| Read-only by default | Mutually exclusive `--execute`/`--dry-run`. Default branches out before reset-journal persistence or POST. Background mode writes only its private log/lock files. | Source trace. |
+| Automate on macOS | Single-run checker, detached/foreground 60-second polling and optional 60-second launchd example. Example has `Disabled=true`, `RunAtLoad=false`, and `--dry-run`. | Plist parsed and safety settings asserted. Not installed. |
 | Preserve finite resets | Lifetime attempt budget defaults to one. Six-hour cooldown, earliest-expiry eligible credit, five-minute natural-reset exclusion. | Source trace. |
 | Avoid duplicate consumption | Lock, durable pre-POST intent, unique request ID, no POST retry, pending intent blocks future live invocations. | Source trace. Crash/power-loss behavior not tested. |
 | Reject changed/stale state | Re-fetch inventory and weekly usage, identical reset boundary required, final GET plus persistence must finish within five seconds. | Source trace and authored tests, not executed. |
@@ -52,4 +52,23 @@ Source was parsed with Python `ast.parse` and the launchd template with `plistli
 - The loader requires exactly one entry matching explicit `--account-id`. It ignores `active_openai_account` for reset selection and refuses missing, duplicate, malformed, or tokenless matches.
 - Explicit `--auth` overrides retain Codex nested-token and flat OAuth compatibility. Credential files remain read-only.
 - Added five synthetic auth-format test methods, bringing the total to 20. All remain unexecuted. Source-only syntax checks cover the adaptation. Threshold, POST, and journal logic were unchanged.
-- The follow-up review's known-unsent stale-preflight lockout finding remains unresolved in this path-only change.
+- At this historical path-only stage the follow-up review's known-unsent stale-preflight lockout remained unresolved. It is fixed by the subsequent background-mode change below.
+
+
+## Background mode and restored Codex default
+
+Implemented, reviewed and source-parsed only. **No background/foreground monitor, child process, script, tests, launchd job, or authenticated API call was run.** No credential files were read for this change.
+
+- Default auth is restored to `~/.codex/auth.json`. Jcode remains supported only when explicitly chosen with `--auth`; README shows one-shot and background examples.
+- `--background` spawns a detached `--foreground` worker with the same pinned account, auth path, execution mode and lifetime budget. `--execute` is never added implicitly. Startup uses a private pipe; the parent reports success only after the worker acquires its singleton lock and validates local credentials and, for live mode, journal structure. This does not attest to API authentication or current quota.
+- Polling starts immediately and schedules sequential iterations at approximately 60-second start intervals. Slow requests never overlap, warnings/errors are logged and usage GETs resume on later intervals. No ambiguous POST is retried because unresolved intent still blocks every live iteration.
+- Credentials reload each iteration. The child receives an absolute auth path without resolving symlinks, so credential symlink rotation is not pinned to an obsolete target.
+- A private append-only log and separate singleton background lock are used. The original reset lock still serializes live checks. Log file opening is nonblocking and refuses symlinks or non-private/non-regular files. Log growth is not automatically rotated, and logs require maintenance by the user.
+- SIGTERM/SIGINT set a stop event. Preflight checks observe it before submitting a new reset, including after journal persistence. An already-sent request may finish verification before exit. This cannot make signal receipt and submission atomic.
+- Fixed the known-unsent lockout: stale final GETs now fail before recording an attempt. If persistence itself makes the reading stale or a stop is requested, only the current known-unsent intent is durably cancelled while retaining the reset lock. Cancellation failure keeps the persisted pending record blocking. Ambiguous submitted attempts are never removed automatically.
+- Final preflight uses both monotonic and wall-clock age to detect macOS sleep and backwards wall-clock changes.
+- Independent review identified startup readiness before local validation, auth-symlink resolution and stale documentation. These were addressed. Runtime behavior remains untested by design.
+
+There are now **36 authored, unexecuted mock-only test methods**. Added cases cover detached argument preservation, read-only default, one-minute pacing after warnings, foreground/background dispatch, mocked readiness success/EOF, duplicate workers, invalid-local-auth rejection, symlink preservation, credential reload, stale-GET no-journal refusal, slow-journal cancellation, stop-event cancellation, cancellation failure and sleep/clock freshness. Python 3.10 syntax, unchanged hard threshold/account-selection functions, single POST site and intent-before-POST ordering were checked by parsing and inspecting source text. The disabled read-only launchd template parses with `StartInterval=60` and contains no nested polling flags.
+
+Real macOS process detachment, startup IPC, signals, lock release, credential refresh timing, filesystem flush semantics and OpenAI private API compatibility remain unverified. No runtime or acceptance-test passing claim is made.

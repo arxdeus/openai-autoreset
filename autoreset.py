@@ -11,9 +11,13 @@ import json
 import math
 import os
 from pathlib import Path
+import select
+import signal
 import stat
+import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -23,7 +27,9 @@ BASE = "https://chatgpt.com/backend-api/wham/"
 CREDITS = "rate-limit-reset-credits"
 WEEK = 604800
 STATE_DIR = Path.home() / "Library/Application Support/openai-autoreset"
-DEFAULT_AUTH = Path.home() / ".jcode/openai-auth.json"
+DEFAULT_AUTH = Path.home() / ".codex/auth.json"
+POLL_SECONDS = 60
+BACKGROUND_LOG = STATE_DIR / "background.log"
 
 
 class Refusal(Exception):
@@ -179,18 +185,24 @@ class API:
             raise Refusal("Network or JSON error. No retry. Check account manually.") from None
 
 
-@contextmanager
-def locked_state():
+def prepare_state_dir():
     STATE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     info = STATE_DIR.lstat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
         raise Refusal("State directory must be owned by you, private (0700), and not a symlink.")
-    fd = os.open(STATE_DIR / "lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+
+
+@contextmanager
+def locked_state(lock_name="lock"):
+    if lock_name not in ("lock", "background.lock"):
+        raise Refusal("Invalid lock name.")
+    prepare_state_dir()
+    fd = os.open(STATE_DIR / lock_name, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise Refusal("Another reset checker is running.") from None
+            raise Refusal("Another reset checker or background monitor is running.") from None
         yield
     finally:
         os.close(fd)
@@ -242,7 +254,20 @@ def save_state(path, state):
             os.unlink(name)
 
 
-def check(api, execute, max_resets, state=None, state_path=None):
+def stopping(stop):
+    return stop is not None and stop.is_set()
+
+
+def preflight_stale(checked_at, checked_wall, boundary):
+    now = time.time()
+    # Wall time also detects macOS sleep and backwards clock changes.
+    return (time.monotonic() - checked_at > 5
+            or not 0 <= now - checked_wall <= 5 or boundary - now <= 300)
+
+
+def check(api, execute, max_resets, state=None, state_path=None, stop=None):
+    if stopping(stop):
+        raise Refusal("Monitor is stopping. No new reset requested.")
     remaining, boundary = weekly(api.request("usage"), time.time())
     print(f"Weekly remaining: {remaining!r}%", flush=True)
     require_threshold(remaining)
@@ -269,17 +294,26 @@ def check(api, execute, max_resets, state=None, state_path=None):
     if credit_id not in {cid for _, cid in available_credits(api.request(CREDITS), time.time())}:
         raise Refusal("Selected credit is no longer available.")
     checked_at = time.monotonic()
+    checked_wall = time.time()
     remaining, final_boundary = weekly(api.request("usage"), time.time())
     require_threshold(remaining)
     if boundary != final_boundary or final_boundary - time.time() <= 300:
         raise Refusal("Weekly window changed or is about to reset. No credit spent.")
+    if preflight_stale(checked_at, checked_wall, final_boundary):
+        raise Refusal("Preflight reading became stale. No request sent or attempt recorded.")
+    if stopping(stop):
+        raise Refusal("Monitor is stopping. No request sent or attempt recorded.")
     attempt = {"credit_id": credit_id, "request_id": str(uuid.uuid4()),
                "time": time.time(), "status": "pending"}
     state["attempts"].append(attempt)
     # Persist intent BEFORE sending. A crash or ambiguous POST leaves a blocking journal.
     save_state(state_path, state)
-    if time.monotonic() - checked_at > 5 or final_boundary - time.time() <= 300:
-        raise Refusal("Preflight reading became stale. Journal remains blocked for manual review.")
+    if preflight_stale(checked_at, checked_wall, final_boundary) or stopping(stop):
+        # No POST was entered. Undo only this known-unsent intent under the same lock.
+        # If saving the rollback fails, the persisted pending intent still blocks resets.
+        state["attempts"].pop()
+        save_state(state_path, state)
+        raise Refusal("Preflight became stale or monitor is stopping. No request sent; unsent intent cancelled.")
     require_threshold(remaining)  # hard guard immediately before the only POST call
     api.request(CREDITS + "/consume", {
         "credit_id": credit_id, "redeem_request_id": attempt["request_id"]
@@ -297,14 +331,113 @@ def check(api, execute, max_resets, state=None, state_path=None):
     print("Reset verified by recovered weekly quota and consumed credit. One credit spent.", flush=True)
 
 
+def run_once(args, stop=None):
+    # Reload credentials each minute to see updates made by Codex/Jcode themselves.
+    token = load_auth(args.auth.expanduser(), args.account_id)
+    api = API(token, args.account_id)
+    if not args.execute:
+        check(api, False, args.max_resets, stop=stop)
+        return
+    account_hash = hashlib.sha256(args.account_id.encode()).hexdigest()
+    with locked_state():
+        path = STATE_DIR / (account_hash + ".json")
+        state = read_state(path, account_hash)
+        check(api, True, args.max_resets, state, path, stop=stop)
+
+
+def report_error(exc):
+    message = str(exc) if isinstance(exc, Refusal) else "Local I/O failure. Reset automation stopped."
+    print(message, file=sys.stderr, flush=True)
+
+
+def poll_forever(args, ready_fd=None):
+    stop = threading.Event()
+    previous = {}
+    try:
+        with locked_state("background.lock"):
+            for signum in (signal.SIGTERM, signal.SIGINT):
+                previous[signum] = signal.signal(signum, lambda *_: stop.set())
+            # Startup checks are local only. Never spend or probe the API for readiness.
+            load_auth(args.auth.expanduser(), args.account_id)
+            if args.execute:
+                account_hash = hashlib.sha256(args.account_id.encode()).hexdigest()
+                with locked_state():
+                    read_state(STATE_DIR / (account_hash + ".json"), account_hash)
+            if ready_fd is not None:
+                os.write(ready_fd, b"READY\n")
+                os.close(ready_fd)
+                ready_fd = None
+            print(f"Polling every {POLL_SECONDS} seconds. PID: {os.getpid()}", flush=True)
+            while not stop.is_set():
+                started = time.monotonic()
+                print(datetime.now().astimezone().isoformat(), flush=True)
+                try:
+                    run_once(args, stop=stop)
+                except (Refusal, OSError) as exc:
+                    # Repeat usage GETs on later polls, never retry an uncertain POST.
+                    # Persisted pending intents remain blocking on every invocation.
+                    report_error(exc)
+                stop.wait(max(0, POLL_SECONDS - (time.monotonic() - started)))
+            print("Background monitor stopped.", flush=True)
+    finally:
+        if ready_fd is not None:
+            os.close(ready_fd)
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+def background_command(args, ready_fd):
+    return [sys.executable, str(Path(__file__).resolve()), "--foreground",
+            "--worker-ready-fd", str(ready_fd),
+            "--account-id", args.account_id,
+            "--auth", str(args.auth.expanduser().absolute()),
+            "--max-resets", str(args.max_resets),
+            "--execute" if args.execute else "--dry-run"]
+
+
+def launch_background(args):
+    prepare_state_dir()
+    log_fd = os.open(BACKGROUND_LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND
+                     | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    child = None
+    read_fd, write_fd = os.pipe()
+    try:
+        info = os.fstat(log_fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise Refusal("Background log must be a private, user-owned regular file.")
+        child = subprocess.Popen(background_command(args, write_fd),
+                                 stdin=subprocess.DEVNULL, stdout=log_fd, stderr=log_fd,
+                                 start_new_session=True, close_fds=True, pass_fds=(write_fd,))
+        os.close(write_fd)
+        write_fd = None
+        readable, _, _ = select.select([read_fd], [], [], 10)
+        if not readable or os.read(read_fd, 32) != b"READY\n":
+            raise Refusal("Background monitor did not start. Check background.log. No automatic retry.")
+        print(f"Background monitor started. PID: {child.pid}. Log: {BACKGROUND_LOG}", flush=True)
+        print("To stop, verify this PID still belongs to autoreset.py, then send SIGTERM.", flush=True)
+    except BaseException:
+        if child is not None and child.poll() is None:
+            child.terminate()
+        raise
+    finally:
+        os.close(log_fd)
+        os.close(read_fd)
+        if write_fd is not None:
+            os.close(write_fd)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--execute", action="store_true", help="ALLOW spending a banked reset")
     modes.add_argument("--dry-run", action="store_true", help="Read only (the default)")
+    polling = parser.add_mutually_exclusive_group()
+    polling.add_argument("--background", action="store_true", help="Detach and check usage every 60 seconds")
+    polling.add_argument("--foreground", action="store_true", help="Check every 60 seconds without detaching")
+    parser.add_argument("--worker-ready-fd", type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--account-id", required=True, help="Pin the intended OAuth account_id")
     parser.add_argument("--auth", type=Path, default=DEFAULT_AUTH,
-                        help="OAuth store path (default ~/.jcode/openai-auth.json)")
+                        help="OAuth store path (default ~/.codex/auth.json)")
     parser.add_argument("--max-resets", type=int, default=1,
                         help="Maximum lifetime attempts in this account journal (default 1)")
     args = parser.parse_args()
@@ -312,16 +445,14 @@ def main():
         raise Refusal("This automation is intended for macOS only.")
     if not args.account_id or not 1 <= args.max_resets <= 100:
         raise Refusal("Account ID and reset-attempt budget (1-100) required.")
-    token = load_auth(args.auth.expanduser(), args.account_id)
-    api = API(token, args.account_id)
-    if not args.execute:
-        check(api, False, args.max_resets)
-        return
-    account_hash = hashlib.sha256(args.account_id.encode()).hexdigest()
-    with locked_state():
-        path = STATE_DIR / (account_hash + ".json")
-        state = read_state(path, account_hash)
-        check(api, True, args.max_resets, state, path)
+    if args.worker_ready_fd is not None and (not args.foreground or args.worker_ready_fd < 3):
+        raise Refusal("Invalid internal background readiness descriptor.")
+    if args.background:
+        launch_background(args)
+    elif args.foreground:
+        poll_forever(args, args.worker_ready_fd)
+    else:
+        run_once(args)
 
 
 if __name__ == "__main__":
@@ -329,8 +460,7 @@ if __name__ == "__main__":
         main()
     except (Refusal, OSError) as exc:
         # Do not log raw HTTP bodies, headers, credentials, or OS error paths.
-        message = str(exc) if isinstance(exc, Refusal) else "Local I/O failure. Reset automation stopped."
-        print(message, file=sys.stderr, flush=True)
+        report_error(exc)
         sys.exit(2)
     except KeyboardInterrupt:
         sys.exit(130)

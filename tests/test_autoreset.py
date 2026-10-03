@@ -5,11 +5,12 @@ For a future authorized run from the repo root:
 """
 import copy
 import json
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import autoreset as ar
 
@@ -63,8 +64,8 @@ class AuthTests(unittest.TestCase):
         with patch.object(Path, "read_text", return_value=json.dumps(data)):
             return ar.load_auth(Path("synthetic-auth.json"), expected)
 
-    def test_jcode_default_path(self):
-        self.assertEqual(ar.DEFAULT_AUTH, Path.home() / ".jcode/openai-auth.json")
+    def test_codex_default_path(self):
+        self.assertEqual(ar.DEFAULT_AUTH, Path.home() / ".codex/auth.json")
 
     def test_jcode_selects_pinned_not_active_account(self):
         data = {"active_openai_account": "other-label", "openai_accounts": [
@@ -210,7 +211,55 @@ class ResetTests(unittest.TestCase):
             with self.assertRaisesRegex(ar.Refusal, "stale"):
                 self.check(api)
         self.assertFalse(api.posted)
-        self.assertEqual(self.saved[-1]["attempts"][0]["status"], "pending")
+        self.assertEqual(self.saved, [])
+        self.assertEqual(self.state["attempts"], [])
+
+    def test_slow_journal_cancels_only_unsent_intent(self):
+        api = FakeAPI()
+        with patch.object(ar.time, "monotonic", side_effect=(0, 0, 6)):
+            with self.assertRaisesRegex(ar.Refusal, "unsent intent cancelled"):
+                self.check(api)
+        self.assertFalse(api.posted)
+        self.assertEqual(self.saved[0]["attempts"][0]["status"], "pending")
+        self.assertEqual(self.saved[-1]["attempts"], [])
+
+    def test_stopping_before_poll_makes_no_requests(self):
+        api = FakeAPI()
+        stop = Mock()
+        stop.is_set.return_value = True
+        with self.assertRaisesRegex(ar.Refusal, "stopping"):
+            ar.check(api, True, 1, self.state, Path("never-written.json"), stop=stop)
+        self.assertEqual(api.calls, [])
+
+    def test_stop_during_journal_cancels_unsent_intent(self):
+        api = FakeAPI()
+        stop = Mock()
+        stop.is_set.side_effect = (False, False, True)
+        with self.assertRaisesRegex(ar.Refusal, "unsent intent cancelled"):
+            ar.check(api, True, 1, self.state, Path("never-written.json"), stop=stop)
+        self.assertFalse(api.posted)
+        self.assertEqual(self.saved[-1]["attempts"], [])
+
+    def test_sleep_or_backwards_clock_marks_preflight_stale(self):
+        for wall in (NOW + 60, NOW - 1):
+            with patch.object(ar.time, "time", return_value=wall):
+                self.assertTrue(ar.preflight_stale(42, NOW, NOW + 10000))
+
+    def test_failed_rollback_preserves_persisted_pending_intent(self):
+        api = FakeAPI()
+        snapshots = []
+
+        def persistence(path, state):
+            if snapshots:
+                raise OSError("Synthetic rollback failure")
+            snapshots.append(copy.deepcopy(state))
+
+        with patch.object(ar, "save_state", side_effect=persistence), \
+                patch.object(ar.time, "monotonic", side_effect=(0, 0, 6)):
+            with self.assertRaises(OSError):
+                self.check(api)
+        self.assertFalse(api.posted)
+        self.assertEqual(snapshots[0]["attempts"][0]["status"], "pending")
 
     def test_changed_weekly_boundary_blocks_post(self):
         api = FakeAPI()
@@ -235,6 +284,135 @@ class ResetTests(unittest.TestCase):
     def test_redirect_refused(self):
         with self.assertRaises(ar.Refusal):
             ar.NoRedirect().redirect_request(None, None, 302, "", {}, "https://example.com")
+
+
+class BackgroundTests(unittest.TestCase):
+    def setUp(self):
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        self.enter_context = stack.enter_context
+        self.enter_context(patch.object(ar, "load_auth", side_effect=AssertionError("No real credentials")))
+        self.enter_context(patch.object(ar, "API", side_effect=AssertionError("No real network")))
+        self.enter_context(patch.object(ar.subprocess, "Popen", side_effect=AssertionError("No real processes")))
+        self.args = SimpleNamespace(account_id="synthetic-account", auth=ar.DEFAULT_AUTH,
+                                    execute=False, max_resets=1)
+
+    def test_child_command_keeps_auth_budget_and_read_only_default(self):
+        command = ar.background_command(self.args, 11)
+        self.assertIn("--foreground", command)
+        self.assertNotIn("--background", command)
+        self.assertIn("--dry-run", command)
+        self.assertNotIn("--execute", command)
+        self.assertEqual(command[command.index("--auth") + 1], str(ar.DEFAULT_AUTH.absolute()))
+        self.assertEqual(command[command.index("--max-resets") + 1], "1")
+
+    def test_child_live_mode_requires_explicit_execute(self):
+        self.args.execute = True
+        self.args.auth = Path.home() / ".jcode/openai-auth.json"
+        command = ar.background_command(self.args, 11)
+        self.assertIn("--execute", command)
+        self.assertNotIn("--dry-run", command)
+        self.assertEqual(command[command.index("--auth") + 1], str(self.args.auth.absolute()))
+
+    def test_poll_warning_continues_and_waits_to_one_minute_boundary(self):
+        stop = Mock()
+        stop.is_set.side_effect = (False, False, True)
+        with patch.object(ar.threading, "Event", return_value=stop), \
+                patch.object(ar, "locked_state", return_value=nullcontext()) as lock, \
+                patch.object(ar, "load_auth", return_value="synthetic-token"), \
+                patch.object(ar.signal, "signal"), \
+                patch.object(ar.time, "monotonic", side_effect=(0, 4, 60, 62)), \
+                patch.object(ar, "run_once", side_effect=ar.Refusal("WARNING: above 1%")) as run:
+            ar.poll_forever(self.args)
+        lock.assert_called_once_with("background.lock")
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual([c.args[0] for c in stop.wait.call_args_list], [56, 58])
+
+    def test_main_background_dispatch_does_not_enable_execute(self):
+        argv = ["autoreset.py", "--background", "--account-id", "synthetic-account"]
+        with patch.object(ar.sys, "argv", argv), patch.object(ar.sys, "platform", "darwin"), \
+                patch.object(ar, "launch_background") as launch:
+            ar.main()
+        args = launch.call_args.args[0]
+        self.assertFalse(args.execute)
+        self.assertEqual(args.auth, ar.DEFAULT_AUTH)
+
+    def test_main_foreground_dispatch_does_not_spawn(self):
+        argv = ["autoreset.py", "--foreground", "--account-id", "synthetic-account"]
+        with patch.object(ar.sys, "argv", argv), patch.object(ar.sys, "platform", "darwin"), \
+                patch.object(ar, "poll_forever") as poll, \
+                patch.object(ar, "launch_background") as launch:
+            ar.main()
+        poll.assert_called_once()
+        launch.assert_not_called()
+
+    def fake_launch(self, response):
+        child = Mock(pid=444)
+        child.poll.return_value = None
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(patch.object(ar, "prepare_state_dir"))
+        stack.enter_context(patch.object(ar.os, "open", return_value=10))
+        stack.enter_context(patch.object(ar.os, "pipe", return_value=(11, 12)))
+        stack.enter_context(patch.object(ar.os, "fstat", return_value=SimpleNamespace(
+            st_mode=ar.stat.S_IFREG | 0o600, st_uid=123)))
+        stack.enter_context(patch.object(ar.os, "getuid", return_value=123))
+        stack.enter_context(patch.object(ar.os, "close"))
+        stack.enter_context(patch.object(ar.select, "select", return_value=([11], [], [])))
+        stack.enter_context(patch.object(ar.os, "read", return_value=response))
+        spawn = stack.enter_context(patch.object(ar.subprocess, "Popen", return_value=child))
+        return child, spawn
+
+    def test_startup_handshake_reports_only_a_ready_detached_child(self):
+        child, spawn = self.fake_launch(b"READY\n")
+        ar.launch_background(self.args)
+        spawn.assert_called_once()
+        self.assertTrue(spawn.call_args.kwargs["start_new_session"])
+        self.assertEqual(spawn.call_args.kwargs["pass_fds"], (12,))
+        self.assertIn("--dry-run", spawn.call_args.args[0])
+        child.terminate.assert_not_called()
+
+    def test_startup_eof_cleans_up_without_automatic_retry(self):
+        child, spawn = self.fake_launch(b"")
+        with self.assertRaisesRegex(ar.Refusal, "did not start"):
+            ar.launch_background(self.args)
+        spawn.assert_called_once()
+        child.terminate.assert_called_once()
+
+    def test_duplicate_worker_never_polls(self):
+        with patch.object(ar, "locked_state", side_effect=ar.Refusal("Already running")), \
+                patch.object(ar, "run_once") as run:
+            with self.assertRaisesRegex(ar.Refusal, "Already running"):
+                ar.poll_forever(self.args)
+        run.assert_not_called()
+
+    def test_auth_symlink_path_is_not_resolved_for_child(self):
+        self.args.auth = Path("synthetic-symlink-auth.json")
+        with patch.object(Path, "resolve", return_value=Path("/synthetic/autoreset.py")):
+            command = ar.background_command(self.args, 11)
+        self.assertEqual(command[command.index("--auth") + 1], str(self.args.auth.absolute()))
+
+    def test_invalid_local_auth_exits_before_readiness_or_poll(self):
+        with patch.object(ar, "locked_state", return_value=nullcontext()), \
+                patch.object(ar.signal, "signal"), \
+                patch.object(ar.os, "write") as ready, \
+                patch.object(ar.os, "close"), \
+                patch.object(ar, "load_auth", side_effect=ar.Refusal("Invalid local auth")), \
+                patch.object(ar, "run_once") as run:
+            with self.assertRaisesRegex(ar.Refusal, "Invalid local auth"):
+                ar.poll_forever(self.args, ready_fd=12)
+        ready.assert_not_called()
+        run.assert_not_called()
+
+    def test_run_once_reloads_tokens_without_enabling_live_mode(self):
+        with patch.object(ar, "load_auth", side_effect=("fake-first", "fake-refreshed")) as auth, \
+                patch.object(ar, "API", return_value=Mock()) as api, \
+                patch.object(ar, "check") as check:
+            ar.run_once(self.args)
+            ar.run_once(self.args)
+        self.assertEqual(auth.call_count, 2)
+        self.assertEqual([c.args[0] for c in api.call_args_list], ["fake-first", "fake-refreshed"])
+        self.assertTrue(all(c.args[1] is False for c in check.call_args_list))
 
 
 if __name__ == "__main__":
