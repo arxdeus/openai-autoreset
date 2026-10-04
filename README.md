@@ -20,11 +20,13 @@
 - An existing ChatGPT-authenticated Codex login stored in your home directory's `.codex/auth.json` (`%USERPROFILE%\.codex\auth.json` on Windows).
 - Available **banked reset credits** for live resets. Purchased usage credits and API-key billing are different and are not supported.
 
-Download this repository and open a terminal in its root. Install package dependencies:
+Activate the CLI:
 
 ```sh
-dart pub get
+dart pub global activate --source git https://github.com/arxdeus/openai-autoreset.git
 ```
+
+That installs the `openai-autoreset` command. If your shell cannot find it, add the pub cache bin directory to `PATH`: `~/.pub-cache/bin` on macOS and Linux, or `%LOCALAPPDATA%\Pub\Cache\bin` on Windows. Run the same command again to update.
 
 **Switching from Python:** stop **all** old polling workers and one-shot checks, and unload any old launchd job before starting Dart. Dart locks do not coordinate with Python's `flock`. Existing account journals are preserved and reused, including pending attempts, cooldowns, and lifetime caps. The macOS state path is unchanged. When moving platforms, preserve the journals in the destination state directory below, do not start with empty state.
 
@@ -43,7 +45,7 @@ Windows PowerShell account-only extraction, without a network request:
 **2. Check usage without spending a reset.** Replace `YOUR_ACCOUNT_ID` with that ID:
 
 ```sh
-dart run bin/autoreset.dart --account-id 'YOUR_ACCOUNT_ID' --dry-run
+openai-autoreset --account-id 'YOUR_ACCOUNT_ID' --dry-run
 ```
 
 The Dart CLI examples work in both sh and PowerShell.
@@ -51,7 +53,7 @@ The Dart CLI examples work in both sh and PowerShell.
 **3. Opt into background resets when ready.** This checks immediately, then approximately once per minute:
 
 ```sh
-dart run bin/autoreset.dart --background --account-id 'YOUR_ACCOUNT_ID' --execute
+openai-autoreset --background --account-id 'YOUR_ACCOUNT_ID' --execute
 ```
 
 > [!IMPORTANT]
@@ -76,10 +78,10 @@ Dry-run does not check journal-based pending attempts, cooldowns, or caps. Above
 
 ```sh
 # Watch in your terminal without spending resets
-dart run bin/autoreset.dart --foreground --account-id 'YOUR_ACCOUNT_ID'
+openai-autoreset --foreground --account-id 'YOUR_ACCOUNT_ID'
 
 # Allow at most one lifetime attempt while monitoring in the background
-dart run bin/autoreset.dart --background --account-id 'YOUR_ACCOUNT_ID' --execute --max-resets 1
+openai-autoreset --background --account-id 'YOUR_ACCOUNT_ID' --execute --max-resets 1
 ```
 
 ### Other credential stores
@@ -89,7 +91,7 @@ For a custom `CODEX_HOME`, pass its auth file explicitly with `--auth`. Keychain
 To use [Jcode](https://github.com/1jehuang/jcode) credentials instead:
 
 ```sh
-dart run bin/autoreset.dart --background --auth "$HOME/.jcode/openai-auth.json" --account-id 'YOUR_ACCOUNT_ID' --execute
+openai-autoreset --background --auth "$HOME/.jcode/openai-auth.json" --account-id 'YOUR_ACCOUNT_ID' --execute
 ```
 
 Use the `account_id` from the intended Jcode `openai_accounts[]` entry. Exactly one entry must match; Jcode's active-account selection never overrides the pin. Codex nested-token and legacy flat OAuth stores are also supported. Credentials reload each polling cycle, but the tool never refreshes or rewrites them.
@@ -136,10 +138,10 @@ Optionally build a standalone executable first. These commands compile it but do
 
 ```sh
 mkdir -p build
-dart compile exe bin/autoreset.dart -o build/autoreset
+dart compile exe bin/openai-autoreset.dart -o build/openai-autoreset
 ```
 
-1. Compile the CLI using the commands above, then replace all placeholders with absolute paths and your account ID. Use the compiled `build/autoreset` executable, not `dart run`, a shell alias, or a source file. Create the log parent directory first.
+1. Clone this repository, compile the CLI using the commands above, then replace all placeholders with absolute paths and your account ID. Use the compiled `build/openai-autoreset` executable, not the activated `openai-autoreset` command, a shell alias, or a source file. Create the log parent directory first.
 2. Set `Disabled` to false. Keep `--dry-run` for monitoring, or deliberately replace it with `--execute` for live resets. Add an optional `--max-resets` cap if needed.
 3. For another credential store, add `--auth` and its absolute path. `launchd` does not expand `~` or shell variables.
 4. Copy it to `~/Library/LaunchAgents/com.local.openai-autoreset.plist`, then enable it:
@@ -203,9 +205,10 @@ One-shot exit codes: **0** for a completed dry-run check or verified reset, **2*
 
 ## Development
 
-The project consists of [the CLI entrypoint](bin/autoreset.dart), the [public library](lib/autoreset.dart) (implementation under `lib/src/`), [offline tests](test/), and the optional launchd template. Run the offline test suite explicitly from the repository root:
+The project consists of [the CLI entrypoint](bin/openai-autoreset.dart), the [public library](lib/autoreset.dart) (implementation under `lib/src/`), [offline tests](test/), and the optional launchd template. From a clone, activate that checkout and run the offline test suite from the repository root:
 
 ```sh
+dart pub global activate --source path .
 dart test
 ```
 

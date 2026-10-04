@@ -11,4 +11,4 @@ dependencies:
 dev_dependencies:
   test: ^1.25.8
 executables:
-  autoreset: autoreset
+  openai-autoreset: openai-autoreset

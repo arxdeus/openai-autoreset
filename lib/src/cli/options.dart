@@ -144,8 +144,8 @@ Options parseOptions(List<String> arguments) {
 }
 
 const usageText = '''Opt-in Codex reset-credit automation. Default: read-only.
-Usage: autoreset --account-id ACCOUNT [--auth PATH] [--execute | --dry-run]
-                [--background | --foreground] [--max-resets 1-100]
+Usage: openai-autoreset --account-id ACCOUNT [--auth PATH] [--execute | --dry-run]
+                        [--background | --foreground] [--max-resets 1-100]
 --execute       ALLOW spending a banked reset, only at 0%-1% weekly remaining
 --dry-run       Read only (the default)
 --background    Detach and check every 60 seconds

@@ -236,7 +236,7 @@ Future<void> launchBackground(Options args) async {
       'Background monitor started. PID: ${child.pid}. Log: ${p.join(local.path, 'background.log')}',
     );
     Log.logStatus(
-      'To stop, verify this PID still belongs to autoreset, then use your OS process tools.',
+      'To stop, verify this PID still belongs to openai-autoreset, then use your OS process tools.',
     );
   } catch (_) {
     if (child != null) {
