@@ -10,7 +10,6 @@
     <string>/ABSOLUTE/PATH/TO/openai-autoreset/autoreset.py</string>
     <string>--account-id</string><string>YOUR_ACCOUNT_ID</string>
     <string>--dry-run</string>
-    <string>--max-resets</string><string>1</string>
   </array>
   <key>StartInterval</key><integer>60</integer>
   <key>RunAtLoad</key><false/>

@@ -72,3 +72,13 @@ Implemented, reviewed and source-parsed only. **No background/foreground monitor
 There are now **36 authored, unexecuted mock-only test methods**. Added cases cover detached argument preservation, read-only default, one-minute pacing after warnings, foreground/background dispatch, mocked readiness success/EOF, duplicate workers, invalid-local-auth rejection, symlink preservation, credential reload, stale-GET no-journal refusal, slow-journal cancellation, stop-event cancellation, cancellation failure and sleep/clock freshness. Python 3.10 syntax, unchanged hard threshold/account-selection functions, single POST site and intent-before-POST ordering were checked by parsing and inspecting source text. The disabled read-only launchd template parses with `StartInterval=60` and contains no nested polling flags.
 
 Real macOS process detachment, startup IPC, signals, lock release, credential refresh timing, filesystem flush semantics and OpenAI private API compatibility remain unverified. No runtime or acceptance-test passing claim is made.
+
+
+## Optional lifetime budget, uncapped when omitted
+
+- `--max-resets` now defaults to `None`: no lifetime reset-attempt cap. An explicit 1-100 cap is still enforced against the retained account journal.
+- Detached workers omit `--max-resets` when no cap was supplied instead of serializing `None`; explicit numeric caps are forwarded unchanged. The disabled read-only launchd example also omits the cap.
+- Live cycling still requires an available eligible credit, 0%-1% weekly remaining, account pinning, fresh preflight, no unresolved intent and the existing six-hour cooldown. Credits are not fabricated or purchased, and exhausted inventory prevents consumption.
+- The previously observed live pending journal entry was not modified, reconciled or cleared. Removing the budget alone cannot resolve its verification failure. Running workers were not restarted.
+- Seven additional synthetic tests cover repeated verified cycles in uncapped mode, pending blocking, cooldown, empty inventory, child option omission, explicit CLI cap preservation and invalid explicit caps. There are now 43 authored test methods, all unexecuted.
+- Static source/AST and plist checks validate the optional-budget paths while comparing unchanged threshold, inventory, credential, journal, cooldown and pending protection. No project code was imported or run; no authenticated API calls or background launches were performed.

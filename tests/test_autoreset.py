@@ -199,6 +199,48 @@ class ResetTests(unittest.TestCase):
                 self.check(api, maximum=maximum)
             self.assertFalse(api.posted)
 
+    def test_uncapped_mode_permits_another_verified_reset_cycle(self):
+        self.state["attempts"] = [
+            {"status": "verified", "time": NOW - 30000 - i,
+             "credit_id": f"older-{i}", "request_id": f"older-request-{i}"}
+            for i in range(3)
+        ]
+        api = FakeAPI()
+        self.check(api, maximum=None)
+        self.assertTrue(api.posted)
+        self.assertEqual(len(self.state["attempts"]), 4)
+        self.assertEqual(self.state["attempts"][-1]["status"], "verified")
+
+    def test_uncapped_mode_still_blocks_pending_attempt(self):
+        self.state["attempts"] = [{"status": "pending", "time": NOW - 30000,
+                                   "credit_id": "older", "request_id": "older-request"}]
+        api = FakeAPI()
+        with self.assertRaisesRegex(ar.Refusal, "Unresolved"):
+            self.check(api, maximum=None)
+        self.assertFalse(api.posted)
+
+    def test_uncapped_mode_still_enforces_cooldown(self):
+        self.state["attempts"] = [{"status": "verified", "time": NOW - 100,
+                                   "credit_id": "older", "request_id": "older-request"}]
+        api = FakeAPI()
+        with self.assertRaisesRegex(ar.Refusal, "cooldown"):
+            self.check(api, maximum=None)
+        self.assertFalse(api.posted)
+
+    def test_uncapped_mode_still_requires_available_credits(self):
+        api = FakeAPI()
+        original = api.request
+
+        def no_credits(path, body=None):
+            if path == ar.CREDITS:
+                return {"available_count": 0, "credits": []}
+            return original(path, body)
+
+        api.request = no_credits
+        with self.assertRaisesRegex(ar.Refusal, "No eligible"):
+            self.check(api, maximum=None)
+        self.assertFalse(api.posted)
+
     def test_inventory_mismatch_refused(self):
         data = inventory()
         data["available_count"] = 2
@@ -314,6 +356,13 @@ class BackgroundTests(unittest.TestCase):
         self.assertNotIn("--dry-run", command)
         self.assertEqual(command[command.index("--auth") + 1], str(self.args.auth.absolute()))
 
+    def test_uncapped_child_omits_budget_argument(self):
+        self.args.max_resets = None
+        command = ar.background_command(self.args, 11)
+        self.assertNotIn("--max-resets", command)
+        self.assertNotIn("None", command)
+        self.assertIn("--dry-run", command)
+
     def test_poll_warning_continues_and_waits_to_one_minute_boundary(self):
         stop = Mock()
         stop.is_set.side_effect = (False, False, True)
@@ -336,6 +385,25 @@ class BackgroundTests(unittest.TestCase):
         args = launch.call_args.args[0]
         self.assertFalse(args.execute)
         self.assertEqual(args.auth, ar.DEFAULT_AUTH)
+        self.assertIsNone(args.max_resets)
+
+    def test_explicit_background_budget_is_preserved(self):
+        argv = ["autoreset.py", "--background", "--account-id", "synthetic-account", "--max-resets", "2"]
+        with patch.object(ar.sys, "argv", argv), patch.object(ar.sys, "platform", "darwin"), \
+                patch.object(ar, "launch_background") as launch:
+            ar.main()
+        self.assertEqual(launch.call_args.args[0].max_resets, 2)
+
+    def test_invalid_explicit_background_budget_is_refused(self):
+        for value in ("0", "-1", "101"):
+            argv = ["autoreset.py", "--background", "--account-id", "synthetic-account",
+                    "--max-resets", value]
+            with self.subTest(value=value), patch.object(ar.sys, "argv", argv), \
+                    patch.object(ar.sys, "platform", "darwin"), \
+                    patch.object(ar, "launch_background") as launch:
+                with self.assertRaises(ar.Refusal):
+                    ar.main()
+                launch.assert_not_called()
 
     def test_main_foreground_dispatch_does_not_spawn(self):
         argv = ["autoreset.py", "--foreground", "--account-id", "synthetic-account"]

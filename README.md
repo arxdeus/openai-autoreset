@@ -38,10 +38,18 @@ With a Jcode store, `--account-id` must match exactly one entry in `openai_accou
 **The next command can consume a real reset immediately. Run only when you decide to activate it:**
 
 ```sh
-python3 autoreset.py --account-id 'YOUR_ACCOUNT_ID' --execute --max-resets 1
+python3 autoreset.py --account-id 'YOUR_ACCOUNT_ID' --execute
 ```
 
-`--max-resets` caps total attempts recorded in this account's journal across all invocations, not per run or per minute. Default: one. Increase deliberately for longer automation. A failed or uncertain submitted attempt also counts and blocks further attempts until manually reconciled. Known-unsent stale preflights are refused before journaling, or their just-written intent is durably cancelled under the same lock. Failed cancellation persistence leaves the on-disk pending intent blocking. A six-hour cooldown applies after an attempt.
+`--max-resets` is optional. **When omitted, there is no lifetime reset-attempt cap:** live polling can keep checking, spending an available reset at 0%-1% remaining, waiting for usage to fall again, and repeating while credits and safety guards permit. This does not create credits or bypass provider limits. When supplied (1-100), it caps total attempts recorded in this account's journal across all invocations, not per run or per minute. A failed or uncertain submitted attempt also counts and blocks further attempts until manually reconciled. Known-unsent stale preflights are refused before journaling, or their just-written intent is durably cancelled under the same lock. Failed cancellation persistence leaves the on-disk pending intent blocking. A six-hour cooldown applies after an attempt.
+
+To deliberately cap live polling to one lifetime attempt, add `--max-resets 1`:
+
+```sh
+python3 autoreset.py --background --account-id 'YOUR_ACCOUNT_ID' --execute --max-resets 1
+```
+
+**Removing the cap does not resolve a `pending` journal entry.** An uncertain earlier reset still blocks future resets until safely reconciled, and the six-hour cooldown still applies. Existing running workers retain their parsed options and loaded code; restart them deliberately to use a changed cap/default. This implementation did not restart any worker or modify live journals.
 
 Exit 0: read-only eligibility reported or reset verified. Exit 2: warning, ineligible condition, budget/cooldown, lock contention, or error. Exit 130: interruption. Threshold warnings go to stderr, not a macOS notification.
 
@@ -58,18 +66,18 @@ python3 autoreset.py --background --account-id 'YOUR_ACCOUNT_ID' --dry-run
 **Live background automation can spend a reset. Explicitly opt in:**
 
 ```sh
-python3 autoreset.py --background --account-id 'YOUR_ACCOUNT_ID' --execute --max-resets 1
+python3 autoreset.py --background --account-id 'YOUR_ACCOUNT_ID' --execute
 ```
 
 Optional Jcode path for live background mode:
 
 ```sh
-python3 autoreset.py --background --auth "$HOME/.jcode/openai-auth.json" --account-id 'YOUR_ACCOUNT_ID' --execute --max-resets 1
+python3 autoreset.py --background --auth "$HOME/.jcode/openai-auth.json" --account-id 'YOUR_ACCOUNT_ID' --execute
 ```
 
 - `--background` detaches a worker, prints its PID and log path, and returns after the worker acquires its singleton lock. Readiness confirms process startup, not successful API authentication. Inspect the log for actual polling results.
 - First check runs immediately, then checks start approximately every 60 seconds. Slow operations never overlap. At more than 1% weekly remaining, each iteration makes only a usage GET and logs a warning. At 0%-1%, eligibility, freshness and optional reset verification can require additional requests.
-- The worker stays read-only unless `--execute` is supplied. Account pin, hard 0%-1% threshold, total attempt budget, cooldown and unresolved-POST protection apply across all iterations. Increasing `--max-resets` is a deliberate lifetime budget increase, not a per-minute allowance.
+- The worker stays read-only unless `--execute` is supplied. Account pin, hard 0%-1% threshold, available-credit requirement, six-hour cooldown and unresolved-POST protection apply across all iterations. No lifetime cap applies unless you explicitly pass `--max-resets`. Background workers preserve an explicit cap and omit the option entirely when no cap was supplied.
 - Only one foreground/background polling worker per OS user is allowed. A second worker fails its startup lock. One-shot checks still use the separate reset lock. Do not run other redeemers or the launchd scheduler alongside this worker.
 - Logs append privately to `~/Library/Application Support/openai-autoreset/background.log` (0600). Tokens and raw API response bodies are not logged. Logs are not automatically rotated. Stop the monitor before archiving/truncating a growing log, and preserve account journals.
 - Closing the launching terminal does not stop the detached worker. Reboot/log-out may stop it; it is not an installed login service, does not auto-restart, and does not wake a sleeping Mac. Use the optional launchd template instead for login scheduling.
@@ -90,7 +98,7 @@ SIGTERM/Ctrl+C prevents a new reset once observed by the preflight checks, and w
 
 To use later, replace every placeholder with an absolute path or your account ID. Use the actual Python 3.10+ binary path, not a shell alias. `launchd` does not expand `~`, `$HOME`, or shell expressions. The script itself resolves its default Codex auth path from your home directory. For another OAuth store, add `--auth` and its absolute file path. Ensure log parent directories exist. Keep configuration and logs private.
 
-For live mode, deliberately replace `--dry-run` with `--execute`, set your total `--max-resets` budget, and change `Disabled` to false. Copy the reviewed file to `~/Library/LaunchAgents/com.local.openai-autoreset.plist`. Installing/enabling is intentionally left to you, and was **not done** here.
+For live mode, deliberately replace `--dry-run` with `--execute`, optionally add a total `--max-resets` budget, and change `Disabled` to false. The example omits the cap by default. Copy the reviewed file to `~/Library/LaunchAgents/com.local.openai-autoreset.plist`. Installing/enabling is intentionally left to you, and was **not done** here.
 
 Future enable command, after reviewing the configuration:
 

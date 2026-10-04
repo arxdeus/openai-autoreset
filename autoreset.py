@@ -277,7 +277,7 @@ def check(api, execute, max_resets, state=None, state_path=None, stop=None):
         attempts = state["attempts"]
         if any(item["status"] == "pending" for item in attempts):
             raise Refusal("Unresolved reset attempt. Check the dashboard and journal manually. No retry.")
-        if len(attempts) >= max_resets:
+        if max_resets is not None and len(attempts) >= max_resets:
             raise Refusal("Configured lifetime reset-attempt budget reached.")
         if attempts and time.time() - max(item["time"] for item in attempts) < 21600:
             raise Refusal("Six-hour reset cooldown is active.")
@@ -387,12 +387,14 @@ def poll_forever(args, ready_fd=None):
 
 
 def background_command(args, ready_fd):
-    return [sys.executable, str(Path(__file__).resolve()), "--foreground",
+    command = [sys.executable, str(Path(__file__).resolve()), "--foreground",
             "--worker-ready-fd", str(ready_fd),
             "--account-id", args.account_id,
             "--auth", str(args.auth.expanduser().absolute()),
-            "--max-resets", str(args.max_resets),
             "--execute" if args.execute else "--dry-run"]
+    if args.max_resets is not None:
+        command.extend(["--max-resets", str(args.max_resets)])
+    return command
 
 
 def launch_background(args):
@@ -438,13 +440,13 @@ def main():
     parser.add_argument("--account-id", required=True, help="Pin the intended OAuth account_id")
     parser.add_argument("--auth", type=Path, default=DEFAULT_AUTH,
                         help="OAuth store path (default ~/.codex/auth.json)")
-    parser.add_argument("--max-resets", type=int, default=1,
-                        help="Maximum lifetime attempts in this account journal (default 1)")
+    parser.add_argument("--max-resets", type=int, default=None,
+                        help="Optional maximum lifetime attempts (1-100). Omit for no cap.")
     args = parser.parse_args()
     if sys.platform != "darwin":
         raise Refusal("This automation is intended for macOS only.")
-    if not args.account_id or not 1 <= args.max_resets <= 100:
-        raise Refusal("Account ID and reset-attempt budget (1-100) required.")
+    if not args.account_id or (args.max_resets is not None and not 1 <= args.max_resets <= 100):
+        raise Refusal("Account ID required. An optional reset-attempt budget must be 1-100.")
     if args.worker_ready_fd is not None and (not args.foreground or args.worker_ready_fd < 3):
         raise Refusal("Invalid internal background readiness descriptor.")
     if args.background:
