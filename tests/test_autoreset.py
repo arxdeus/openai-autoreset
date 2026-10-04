@@ -1,6 +1,6 @@
-"""Offline mock tests. Authored but NOT EXECUTED during implementation.
+"""Offline safety tests using synthetic credentials and mocked external boundaries.
 
-For a future authorized run from the repo root:
+Run explicitly from the repository root:
     python3 -m unittest discover -s tests -v
 """
 import copy

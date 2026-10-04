@@ -1,132 +1,177 @@
-# macOS Codex automatic banked reset
+# OpenAI Autoreset
 
-**Implemented and statically reviewed only. Not executed, imported, installed, or enabled. No authenticated API calls were made during development.**
+**A lightweight macOS CLI that monitors Codex weekly usage and redeems your banked resets when you need them.**
 
-`autoreset.py` spends an existing Codex reset credit only when the general **weekly remaining percentage is between 0% and 1%, inclusive**. Above 1% it prints `WARNING` to stderr and exits without resetting. There is no threshold override. It does not buy credits, rotate accounts, or reset passwords.
+[Quick start](#quick-start) · [Usage](#usage) · [Background mode](#background-mode) · [Safety](#safety) · [Troubleshooting](#troubleshooting)
 
-## Important limitations
+- **One-minute monitoring:** run once, poll in your terminal, or detach into the background.
+- **Strict reset threshold:** only reset at **0%–1% weekly remaining**, never above 1%.
+- **Read-only by default:** spending a reset requires an explicit `--execute`.
+- **No dependencies:** uses Python's standard library and your existing OAuth credentials.
 
-This uses **undocumented ChatGPT backend endpoints**, identified in public open-source implementations, not a supported OpenAI reset API. See [RESEARCH.md](RESEARCH.md). API and response compatibility have not been live-tested. Unknown schemas and uncertain results stop automation rather than risk another reset.
+> [!WARNING]
+> This is an unofficial tool using undocumented ChatGPT backend endpoints. `--execute` can spend real reset credits. It does not buy credits, bypass usage limits, or guarantee compatibility with future OpenAI changes.
 
-The saved `ChatGPT.html` and its companion assets were searched as inert text. They did not contain the reset endpoint, `redeem_request_id`, or the reset button label. The saved page was not executed and its private contents are not included here.
+## Quick start
 
-## Requirements
+### Requirements
 
-- macOS and Python 3.10 or newer. No third-party packages.
-- An existing ChatGPT-authenticated Codex store at `~/.codex/auth.json`, containing `tokens.access_token` and `tokens.account_id`. Explicit `--auth` overrides also support Jcode `openai_accounts[]` entries and legacy flat OAuth stores. Keychain-only credentials are not supported.
-- At least one eligible banked reset. API-key billing is not supported.
-- Obtain the intended `tokens.account_id` from your Codex auth file locally and keep it private. Never paste tokens into commands, logs, or this repository.
+- macOS and **Python 3.10+**.
+- An existing ChatGPT-authenticated Codex login stored in `~/.codex/auth.json`.
+- Available **banked reset credits** for live resets. Purchased usage credits and API-key billing are different and are not supported.
 
-## Commands for your later use, NOT run during implementation
+Download this repository and open a terminal in its root. There are no packages to install.
 
-Read-only check (this still makes authenticated GET requests when **you** run it):
+**1. Find your account ID locally.** This prints only the account ID, not tokens, and makes no network request:
+
+```sh
+python3 -c 'import json; from pathlib import Path; print(json.loads((Path.home()/".codex/auth.json").read_text())["tokens"]["account_id"])'
+```
+
+**2. Check usage without spending a reset.** Replace `YOUR_ACCOUNT_ID` with that ID:
 
 ```sh
 python3 autoreset.py --account-id 'YOUR_ACCOUNT_ID' --dry-run
 ```
 
-Default auth file: `~/.codex/auth.json`. Override with `--auth '/absolute/path/auth.json'` to use another supported OAuth store. For a custom `CODEX_HOME`, pass its auth file explicitly. OAuth tokens are read only, never refreshed or rewritten. In polling mode the script reloads the file each iteration to see updates made by Codex/Jcode themselves.
-
-Optional Jcode auth example:
-
-```sh
-python3 autoreset.py --auth "$HOME/.jcode/openai-auth.json" --account-id 'YOUR_ACCOUNT_ID' --dry-run
-```
-
-With a Jcode store, `--account-id` must match exactly one entry in `openai_accounts[]`; missing or duplicate matches are refused. Jcode's `active_openai_account` never overrides the pinned account.
-
-**The next command can consume a real reset immediately. Run only when you decide to activate it:**
-
-```sh
-python3 autoreset.py --account-id 'YOUR_ACCOUNT_ID' --execute
-```
-
-`--max-resets` is optional. **When omitted, there is no lifetime reset-attempt cap:** live polling can keep checking, spending an available reset at 0%-1% remaining, waiting for usage to fall again, and repeating while credits and safety guards permit. This does not create credits or bypass provider limits. When supplied (1-100), it caps total attempts recorded in this account's journal across all invocations, not per run or per minute. A failed or uncertain submitted attempt also counts and blocks further attempts until manually reconciled. Known-unsent stale preflights are refused before journaling, or their just-written intent is durably cancelled under the same lock. Failed cancellation persistence leaves the on-disk pending intent blocking. A six-hour cooldown applies after an attempt.
-
-To deliberately cap live polling to one lifetime attempt, add `--max-resets 1`:
-
-```sh
-python3 autoreset.py --background --account-id 'YOUR_ACCOUNT_ID' --execute --max-resets 1
-```
-
-**Removing the cap does not resolve a `pending` journal entry.** An uncertain earlier reset still blocks future resets until safely reconciled, and the six-hour cooldown still applies. Existing running workers retain their parsed options and loaded code; restart them deliberately to use a changed cap/default. This implementation did not restart any worker or modify live journals.
-
-Exit 0: read-only eligibility reported or reset verified. Exit 2: warning, ineligible condition, budget/cooldown, lock contention, or error. Exit 130: interruption. Threshold warnings go to stderr, not a macOS notification.
-
-## Detached background mode, one check every minute
-
-The following commands are examples for your later use. **No background process was started during implementation.**
-
-Read-only background monitor using the default Codex auth path:
-
-```sh
-python3 autoreset.py --background --account-id 'YOUR_ACCOUNT_ID' --dry-run
-```
-
-**Live background automation can spend a reset. Explicitly opt in:**
+**3. Opt into background resets when ready.** This checks immediately, then approximately once per minute:
 
 ```sh
 python3 autoreset.py --background --account-id 'YOUR_ACCOUNT_ID' --execute
 ```
 
-Optional Jcode path for live background mode:
+> [!IMPORTANT]
+> Without `--max-resets`, there is **no lifetime attempt cap**. The monitor can repeat the reset-and-wait cycle while eligible credits remain, but the **six-hour cooldown from the recorded attempt**, 0%–1% threshold, and unresolved-attempt protection still apply. Add `--max-resets 1` if you want to permit only one lifetime attempt.
+
+## Usage
+
+| Option | Behavior |
+| --- | --- |
+| `--account-id ID` | Required. Pins all reads and resets to the intended OAuth account. |
+| `--auth PATH` | Credential file. Defaults to `~/.codex/auth.json`. |
+| `--dry-run` | Read-only usage/credit eligibility check, also the default. Makes authenticated GET requests but never requests a reset. |
+| `--execute` | Allows a reset only when all safety checks pass. Mutually exclusive with `--dry-run`. |
+| `--background` | Detaches a worker that polls every 60 seconds and prints its PID and log path. |
+| `--foreground` | Polls every 60 seconds in the current terminal. Stop with Ctrl+C. Mutually exclusive with `--background`. |
+| `--max-resets N` | Optional lifetime attempt cap, **1–100**, across runs for this account. Omit for no cap. |
+| `--help` | Displays CLI help. |
+
+Without either polling flag, the script checks once and exits. Background mode does **not** imply `--execute`.
+
+Dry-run does not check journal-based pending attempts, cooldowns, or caps. Above 1% remaining, it warns without fetching credit inventory.
+
+```sh
+# Watch in your terminal without spending resets
+python3 autoreset.py --foreground --account-id 'YOUR_ACCOUNT_ID'
+
+# Allow at most one lifetime attempt while monitoring in the background
+python3 autoreset.py --background --account-id 'YOUR_ACCOUNT_ID' --execute --max-resets 1
+```
+
+### Other credential stores
+
+For a custom `CODEX_HOME`, pass its auth file explicitly with `--auth`. Keychain-only credentials are not supported.
+
+To use [Jcode](https://github.com/1jehuang/jcode) credentials instead:
 
 ```sh
 python3 autoreset.py --background --auth "$HOME/.jcode/openai-auth.json" --account-id 'YOUR_ACCOUNT_ID' --execute
 ```
 
-- `--background` detaches a worker, prints its PID and log path, and returns after the worker acquires its singleton lock. Readiness confirms process startup, not successful API authentication. Inspect the log for actual polling results.
-- First check runs immediately, then checks start approximately every 60 seconds. Slow operations never overlap. At more than 1% weekly remaining, each iteration makes only a usage GET and logs a warning. At 0%-1%, eligibility, freshness and optional reset verification can require additional requests.
-- The worker stays read-only unless `--execute` is supplied. Account pin, hard 0%-1% threshold, available-credit requirement, six-hour cooldown and unresolved-POST protection apply across all iterations. No lifetime cap applies unless you explicitly pass `--max-resets`. Background workers preserve an explicit cap and omit the option entirely when no cap was supplied.
-- Only one foreground/background polling worker per OS user is allowed. A second worker fails its startup lock. One-shot checks still use the separate reset lock. Do not run other redeemers or the launchd scheduler alongside this worker.
-- Logs append privately to `~/Library/Application Support/openai-autoreset/background.log` (0600). Tokens and raw API response bodies are not logged. Logs are not automatically rotated. Stop the monitor before archiving/truncating a growing log, and preserve account journals.
-- Closing the launching terminal does not stop the detached worker. Reboot/log-out may stop it; it is not an installed login service, does not auto-restart, and does not wake a sleeping Mac. Use the optional launchd template instead for login scheduling.
-- To see polling without detaching, use `--foreground` instead of `--background`. Stop it with Ctrl+C.
+Use the `account_id` from the intended Jcode `openai_accounts[]` entry. Exactly one entry must match; Jcode's active-account selection never overrides the pin. Codex nested-token and legacy flat OAuth stores are also supported. Credentials reload each polling cycle, but the tool never refreshes or rewrites them.
 
-To stop the detached worker, use the PID printed at startup. **First verify it still belongs to this script**, since PIDs can be reused:
+## Background mode
+
+The detached worker survives closing its launching terminal. Startup confirmation means its lock and local configuration are valid, **not** that the API request succeeded. Read its log to confirm polling:
+
+```sh
+tail -f "$HOME/Library/Application Support/openai-autoreset/background.log"
+```
+
+Only one polling worker per OS user is allowed. Slow requests do not overlap; they can delay the next check. The worker does not wake a sleeping Mac, install a login service, or automatically restart after exit.
+
+To stop it, use the PID printed at startup. **Verify the process before sending a signal**, since PIDs can be reused:
 
 ```sh
 ps -p YOUR_PID -o pid=,command=
 kill -TERM YOUR_PID
 ```
 
-SIGTERM/Ctrl+C prevents a new reset once observed by the preflight checks, and waits for an in-flight request/verification to finish before exit. It cannot undo a request already sent. A tiny race between the last check and submission is unavoidable. Unexpected interruption or uncertain submission retains a blocking journal, never an automatic POST retry.
+Stopping allows in-flight requests or verification to finish. It cannot undo a reset already submitted. Restart deliberately after changing options or updating the script; running workers do not reload code or CLI arguments.
 
-## Automatic polling with launchd
+<details>
+<summary><strong>Alternative: schedule checks with launchd</strong></summary>
 
-`launchd/com.local.openai-autoreset.plist.example` is an **uninstalled, disabled-by-default, dry-run template** for checking every minute while logged in. It does not wake a sleeping Mac. This is an alternative to `--background`, not additional required setup. Do not use both schedulers, and do not add `--background` or `--foreground` to the launchd template: launchd should run one check per interval.
+The [launchd template](launchd/com.local.openai-autoreset.plist.example) runs a single check every 60 seconds. It ships **disabled and read-only**.
 
-To use later, replace every placeholder with an absolute path or your account ID. Use the actual Python 3.10+ binary path, not a shell alias. `launchd` does not expand `~`, `$HOME`, or shell expressions. The script itself resolves its default Codex auth path from your home directory. For another OAuth store, add `--auth` and its absolute file path. Ensure log parent directories exist. Keep configuration and logs private.
-
-For live mode, deliberately replace `--dry-run` with `--execute`, optionally add a total `--max-resets` budget, and change `Disabled` to false. The example omits the cap by default. Copy the reviewed file to `~/Library/LaunchAgents/com.local.openai-autoreset.plist`. Installing/enabling is intentionally left to you, and was **not done** here.
-
-Future enable command, after reviewing the configuration:
+1. Replace all placeholders with absolute paths and your account ID. Use a Python 3.10+ binary, not a shell alias. Create the log parent directory first.
+2. Set `Disabled` to false. Keep `--dry-run` for monitoring, or deliberately replace it with `--execute` for live resets. Add an optional `--max-resets` cap if needed.
+3. For another credential store, add `--auth` and its absolute path. `launchd` does not expand `~` or shell variables.
+4. Copy it to `~/Library/LaunchAgents/com.local.openai-autoreset.plist`, then enable it:
 
 ```sh
 launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.local.openai-autoreset.plist"
 ```
 
-Stop before any maintenance or account changes:
+To stop the job:
 
 ```sh
 launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.local.openai-autoreset.plist"
 ```
 
-## Safety design
+Choose **launchd or the built-in polling worker**, not both. Do not add `--background` or `--foreground` to the template: launchd already schedules one-shot checks.
 
-1. Read the window whose `limit_window_seconds` is exactly 604800. Do not mistake session or model-specific usage for the weekly limit.
-2. Compute `remaining = 100 - used_percent` without rounding. Permit only `0 <= remaining <= 1`. For example, 98.99% used means 1.01% remaining and is refused.
-3. Require a pinned account ID and an available `codex_rate_limits` credit with a known expiry more than one minute away. Select earliest expiry first.
-4. Refuse within five minutes of natural weekly reset. Re-read inventory and weekly usage immediately before spending. Refuse if the weekly boundary changes or final preflight becomes stale.
-5. Acquire an OS file lock and durably persist the selected credit and unique request ID **before** the POST. The journal is account-scoped under `~/Library/Application Support/openai-autoreset/`.
-6. Send at most one POST per invocation. Never retry it, even on timeout, HTTP 429/500, invalid JSON, interruption, or uncertain success. Any unresolved intent blocks later live invocations.
-7. Verify both recovered weekly quota and explicit `consumed` status for the selected credit. Unrecognized status, disappearance, or delayed consistency leaves the journal pending. This conservative rule can require manual reconciliation after a successful reset.
-8. Fixed HTTPS host, normal certificate validation, redirects refused, inherited proxies disabled, bounded responses, no secret logging. No browser automation, credential extraction from saved HTML, account switching, or purchases.
+</details>
 
-The client cannot make the usage check and redemption atomic on OpenAI's server. Another app, device, or manual reset could race the final check. **Do not run another reset redeemer concurrently.** Server-side percentages may also be rounded; the script uses the value actually returned, not the dashboard's display text. No guarantee of undisclosed backend precision is possible.
+## Safety
 
-Do not delete the state directory to bypass a pending attempt or budget. Stop your background monitor or launchd job and inspect the official usage dashboard and credit history first. For a known-completed pending attempt, a knowledgeable operator may preserve its IDs/timestamp and change only its `status` to `verified`. There is deliberately no automatic clear/retry command. A truly uncertain outcome should remain blocked. Back up the journal before editing.
+Before spending a reset, the tool:
 
-## Review and tests
+1. Identifies the general seven-day window by its duration, not the session or model-specific limit. It calculates remaining percentage without client-side rounding and warns above 1%.
+2. Requires an available `codex_rate_limits` credit with a known expiry more than one minute away, choosing the earliest expiry first. It refuses within five minutes of the natural weekly reset.
+3. Rechecks inventory and weekly usage immediately before submission, requiring the same reset boundary and a preflight no more than five seconds old.
+4. Acquires the reset lock and durably records a unique request ID and selected credit **before** the POST. Submitted POSTs are never automatically retried.
+5. Checks recovered weekly quota and an explicit `consumed` credit status after three seconds. Uncertain results remain `pending` and block further live attempts, including after restart.
 
-[REVIEW.md](REVIEW.md) records static checks and remaining limitations. `tests/test_autoreset.py` contains mock-only tests for future authorized execution. **Tests were authored but not run**, and the script was not imported even for testing, per the request. Syntax was checked by parsing source text only.
+Account journals and the built-in background log live in `~/Library/Application Support/openai-autoreset/`. That directory is private (0700), and those generated files are private (0600). Foreground output goes to the terminal; launchd logs use the template's configured paths. Tokens and raw API bodies are not logged. Background logs are append-only without automatic rotation; stop the monitor before archiving a growing log and preserve its journals.
+
+> [!CAUTION]
+> Do not delete journals or restore stale copies to bypass a pending attempt, cooldown, or cap. Another device or manual reset can race the final usage check, and server rounding or delayed consistency cannot be ruled out. Do not run another reset redeemer concurrently.
+
+## Troubleshooting
+
+| Message or symptom | Meaning / next step |
+| --- | --- |
+| `WARNING: ... above 1%` | Expected behavior. Continue monitoring until weekly remaining is 0%–1%. |
+| `Six-hour reset cooldown is active` | Fewer than six hours have elapsed since the recorded attempt. Removing `--max-resets` does not remove the cooldown. |
+| `Configured lifetime reset-attempt budget reached` | An explicit cap has been reached, including previous runs. Omit or increase it deliberately, then restart. |
+| `No eligible ... reset credit available` | No eligible, unexpired banked reset is available. The tool cannot create or buy one. |
+| `Unresolved reset attempt` / `Reset outcome not verified` | Stop automation and inspect the [official usage dashboard](https://chatgpt.com/codex/settings/usage) and credit history. A reset may have succeeded even when verification failed. |
+| HTTP 401/403 or unreadable credentials | Check the pinned account and file path. Reauthenticate through the credential-owning app if necessary. |
+| Network error or HTTP 504 | Polling resumes usage reads on later intervals. An uncertain reset POST still remains blocked, not retried. |
+| `Another reset checker or background monitor is running` | Avoid duplicate workers and simultaneous live checks. Verify the existing PID and log before stopping anything. |
+| Background startup failure | Inspect `background.log` for credential, journal, permission, or lock errors. |
+
+**Pending attempts need manual reconciliation.** The single verification check can be too early, or the backend may represent consumed credits differently. Omitting a cap does not fix that. After stopping automation, preserve and back up the journal; only mark the specific attempt `verified` if its completion has been independently confirmed. Otherwise leave it blocked. There is no automatic clear/retry command.
+
+One-shot exit codes: **0** for a completed dry-run check or verified reset, **2** for a refusal/error, and **130** for interruption. A background launch returning 0 reports worker readiness; subsequent polling results are in the log.
+
+## Development
+
+The project consists of [the CLI](autoreset.py), [mock-only tests](tests/test_autoreset.py), and the optional launchd template. Run the offline test suite explicitly from the repository root:
+
+```sh
+python3 -m unittest discover -s tests -v
+```
+
+Tests cover threshold boundaries, account selection, journal safety, optional caps, credential reload, polling, and mocked process startup. They use synthetic credentials and mocked network/process boundaries; they do not establish live OpenAI API compatibility.
+
+<details>
+<summary><strong>API references and related implementations</strong></summary>
+
+- [OpenAI Codex pricing and usage documentation](https://developers.openai.com/codex/pricing/): plan usage and the official dashboard, not a supported reset-redemption API contract.
+- [Codex Account Switcher reset implementation](https://github.com/lordydord/Codex-Account-Switcher/blob/955e1c854a96b8ef9a70aea5662c375d6cfbd2e0/Sources/main.swift): reference for the private redemption protocol.
+- [CodexBar provider documentation](https://github.com/steipete/CodexBar/blob/main/docs/codex.md): usage and reset-inventory monitoring, not redemption.
+- [codex-reset-credits](https://gitlab.com/aa22396584/codex-reset-credits): a read-only reset-credit inventory tool.
+
+</details>
