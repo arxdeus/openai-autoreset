@@ -1,0 +1,17 @@
+const base = 'https://chatgpt.com/backend-api/wham/';
+const creditsEndpoint = 'rate-limit-reset-credits';
+const week = 604800;
+const pollSeconds = 60;
+const fiveMinutes = 300;
+const sixHours = 21600;
+const preflightSeconds = 5;
+const creditGraceSeconds = 60;
+const verifyPause = Duration(seconds: 3);
+const httpTimeout = Duration(seconds: 20);
+const handshakeLimit = Duration(seconds: 10);
+const handshakeInterval = Duration(milliseconds: 25);
+const maxApiBytes = 2000000;
+const maxJournalBytes = 16000000;
+const maxReadyBytes = 160;
+const interruptedStatus = 130;
+const logIoFailure = 'Background log I/O failure. Reset automation stopped.';

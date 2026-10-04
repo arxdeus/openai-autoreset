@@ -203,7 +203,7 @@ One-shot exit codes: **0** for a completed dry-run check or verified reset, **2*
 
 ## Development
 
-The project consists of [the CLI](bin/autoreset.dart), [the implementation](lib/autoreset.dart), [offline tests](test/autoreset_test.dart), and the optional launchd template. Run the offline test suite explicitly from the repository root:
+The project consists of [the CLI entrypoint](bin/autoreset.dart), the [public library](lib/autoreset.dart) (implementation under `lib/src/`), [offline tests](test/), and the optional launchd template. Run the offline test suite explicitly from the repository root:
 
 ```sh
 dart test
