@@ -1,0 +1,13 @@
+name: openai_autoreset
+description: Conservative, opt-in cross-platform Codex reset-credit automation.
+version: 1.0.0
+publish_to: none
+environment:
+  sdk: '>=3.7.0 <4.0.0'
+dependencies:
+  crypto: ^3.0.6
+  path: ^1.9.1
+dev_dependencies:
+  test: ^1.25.8
+executables:
+  autoreset: autoreset

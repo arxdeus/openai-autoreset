@@ -6,8 +6,7 @@
   <key>Disabled</key><true/>
   <key>ProgramArguments</key>
   <array>
-    <string>/ABSOLUTE/PATH/TO/python3</string>
-    <string>/ABSOLUTE/PATH/TO/openai-autoreset/autoreset.py</string>
+    <string>/ABSOLUTE/PATH/TO/openai-autoreset/build/autoreset</string>
     <string>--account-id</string><string>YOUR_ACCOUNT_ID</string>
     <string>--dry-run</string>
   </array>

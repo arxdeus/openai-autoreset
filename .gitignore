@@ -1,5 +1,7 @@
-__pycache__/
-*.pyc
+.dart_tool/
+.packages
+build/
+coverage/
 .DS_Store
 .env
 .env.*
